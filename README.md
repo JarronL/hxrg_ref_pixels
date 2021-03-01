@@ -1,7 +1,6 @@
 # HAWAII-xRG Reference Pixel Corrections
 
 ## and Detector Timing Code
---------------------- 
 
 *Authors*: Jarron Leisenring (University of Arizona, Steward Observatory)
 
@@ -12,7 +11,6 @@ Reference pixels can be used to track slowly changing offsets in science data me
 While initially developed for JWST NIRCam's detectors and associated readout modes (Slow Mode with 4 or 1 channel outputs), there is built-in flexibility to accommodate a number of HxRG readout schemes. This includes H1RG, H2RG, and H4RGs operating in Slow or Fast Mode with 1, 2, 4, 16, or 32 channel outputs. 
 
 ## Installing from source
---------------------- 
 
 To get the most up to date version of ``ref_pixels``, install directly from source. The [development version](https://github.com/JarronL/pynrc>) can be found on GitHub.
 
