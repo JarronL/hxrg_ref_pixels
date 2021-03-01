@@ -157,7 +157,7 @@ def reffix_amps(cube, nchans=4, in_place=True, altcol=True, supermean=False,
     nb = nbot if bot_ref else 0
 
     if (nt+nb)==0: 
-        _log.warn("No reference pixels available for use. Returning...")
+        _log.error("No reference pixels available for use. Returning...")
         return
 
     # Slice out reference pixels
@@ -194,7 +194,8 @@ def reffix_amps(cube, nchans=4, in_place=True, altcol=True, supermean=False,
                 cube[i,:,ich1:ich2] -= refs_amps_avg[ch,i]
 
     # Add back supermean
-    if supermean: cube += smean
+    if supermean: 
+        cube += smean
 
     cube = cube.squeeze()
     return cube
@@ -277,7 +278,7 @@ def ref_filter(cube, nchans=4, in_place=True, avg_type='frame', perint=False,
     refs_right = cube[:,:,-nr:] if nr>0 else None
     refvals = calc_avg_cols(refs_left, refs_right, avg_type, **kwargs)
 
-    # The delta time does't seem to make any difference in the final data product
+    # The delta time doesn't seem to make any difference in the final data product
     # Just for vizualization purposes...
     delt = 10E-6 * (nx/nchans + 12.)
     refvals_smoothed = calc_col_smooth(refvals, cube.shape, perint=perint, 
@@ -343,8 +344,6 @@ def calc_avg_amps(refs_all, data_shape, nchans=4, altcol=True):
             # Channel indices
             ich1 = ch*chsize
             ich2 = ich1 + chsize
-
-            # Slice out alternating columns
             refs_ch = refs_all[:,:,ich1:ich2].reshape((nz,-1))
 
             # Take the resistant mean and reshape for broadcasting
