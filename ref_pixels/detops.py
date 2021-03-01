@@ -939,9 +939,298 @@ class det_timing(object):
         
 
 
+class DetectorOps(det_timing):
+    """ 
+    Class to hold detector operations information. Includes SCA attributes such as
+    detector names and IDs as well as :class:`multiaccum` class for ramp settings.
+
+    Parameters
+    ----------------
+    detector : int, str
+        NIRCam detector ID (481-490) or SCA ID (A1-B5).
+    wind_mode : str
+        Window mode type 'FULL', 'STRIPE', 'WINDOW'.
+    xpix : int
+        Size of window in x-pixels for frame time calculation.
+    ypix : int
+        Size of window in y-pixels for frame time calculation.
+    x0 : int
+        Lower-left x-coord position of detector window.
+    y0 : int
+        Lower-left y-coord position of detector window.
+    nff : int
+        Number of fast row resets.
+
+    Keyword Args
+    ------------
+    read_mode : str
+        NIRCam Ramp Readout mode such as 'RAPID', 'BRIGHT1', etc.
+    nint : int
+        Number of integrations (ramps).
+    ngroup : int
+        Number of groups in a integration.
+    nf : int
+        Number of frames per group.
+    nd1 : int
+        Number of drop frame after reset (before first group read). 
+    nd2 : int
+        Number of drop frames within a group (ie., groupgap). 
+    nd3 : int
+        Number of drop frames after final read frame in ramp. 
+
+
+    Examples
+    --------
+    Use kwargs functionality to pass keywords to the multiaccum class.
+    
+    Send via a dictionary of keywords and values:
+        >>> kwargs = {'read_mode':'RAPID', 'nint':5, 'ngroup':10}
+        >>> d = DetectorOps(**kwargs)
+    
+    Set the keywords directly:   
+        >>> d = DetectorOps(read_mode='RAPID', nint=5, ngroup=10)
+    """
+
+    def __init__(self, detector=481, wind_mode='FULL', xpix=2048, ypix=2048, 
+                 x0=0, y0=0, nff=None, **kwargs):
+                 
+        det_timing.__init__(self, wind_mode=wind_mode, xpix=xpix, ypix=ypix, 
+                            x0=x0, y0=y0, mode='JWST', nff=nff, **kwargs)
+
+        # Typical values for SW/LW detectors that get saved based on SCA ID.
+        # After setting the SCA ID, these various parameters can be updated,
+        # however they will be reset whenever the SCA ID is modified.
+        #   - Pixel Scales in arcsec/pix
+        #   - Well saturation level in e-
+        #   - Typical dark current values in e-/sec (ISIM CV3)
+        #   - Read Noise in e-
+        #   - IPC and PPC in %
+        #   - p_excess: Parameters that describe the excess variance observed in
+        #     effective noise plots.
+        self._properties_SW = {
+            'pixel_scale':0.0311, 'dark_current':0.002, 'read_noise':11.5, 
+            'IPC':0.54, 'PPC':0.09, 'p_excess':(1.0,5.0), 'ktc':37.6,
+             'well_level':100e3 #, 'well_level_old':81e3
+        }
+        self._properties_LW = {
+            'pixel_scale':0.0630, 'dark_current':0.034, 'read_noise':10.0, 
+            'IPC':0.60, 'PPC':0.19, 'p_excess':(1.5,10.0), 'ktc':36.8,
+            'well_level':83e3 #, 'well_level_old':75e3
+        }
+        # Automatically set the pixel scale based on detector selection
+        self.auto_pixscale = True  
+
+        self._gain_list = {481:2.07, 482:2.01, 483:2.16, 484:2.01, 485:1.83, 
+                           486:2.00, 487:2.42, 488:1.93, 489:2.30, 490:1.85}
+
+        self._scaids = {481:'A1', 482:'A2', 483:'A3', 484:'A4', 485:'A5',
+                        486:'B1', 487:'B2', 488:'B3', 489:'B4', 490:'B5'}
+        # Allow user to specify name using either SCA ID or Detector ID (ie., 481 or 'A1')
+        try: # First, attempt to set SCA ID
+            self.scaid = detector 
+        except ValueError: 
+            try: # If that doesn't work, then try to set Detector ID
+                self.detid = detector
+            except ValueError: # If neither work, raise ValueError exception
+                raise ValueError("Invalid detector: {0} \n\tValid names are: {1},\n\t{2}" \
+                      .format(detector, ', '.join(self.detid_list), \
+                      ', '.join(str(e) for e in self.scaid_list)))
+
+        _log.info('Initializing SCA {}/{}'.format(self.scaid,self.detid))
+
+    @property
+    def scaid(self):
+        """Selected SCA ID from detectors in the `scaid_list` attribute. 481, 482, etc."""
+        return self._scaid
+
+    @property
+    def detid(self):
+        """Selected Detector ID from detectors in the `detid_list` attribute. A1, A2, etc."""
+        return self._detid
+
+    @property
+    def detname(self):
+        """Selected Detector ID from detectors in the `scaid_list` attribute. NRCA1, NRCA2, etc."""
+        return self._detname
+
+    # Used for setting the SCA ID then updating all the other detector properties
+    @scaid.setter
+    def scaid(self, value):
+        """Set SCA ID (481, 482, ..., 489, 490). Automatically updates other relevant attributes."""
+        _check_list(value, self.scaid_list, var_name='scaid')
+
+        self._scaid = value
+        self._detid = self._scaids.get(self._scaid)
+
+        # Detector Name (as stored in FITS headers): NRCA1, NRCALONG, etc.
+        if self.channel=='LW': self._detname = 'NRC' + self.module + 'LONG'
+        else:  self._detname = 'NRC' + self._detid
+
+        # Select various detector properties (pixel scale, dark current, read noise, etc)
+        # depending on LW or SW detector
+        dtemp = self._properties_LW if self.channel=='LW' else self._properties_SW
+        if self.auto_pixscale: self.pixelscale = dtemp['pixel_scale']
+        self.ktc          = dtemp['ktc']
+        self.dark_current = dtemp['dark_current']
+        self.read_noise   = dtemp['read_noise']
+        self.IPC          = dtemp['IPC']
+        self.PPC          = dtemp['PPC']
+        self.p_excess     = dtemp['p_excess']
+        self.well_level   = dtemp['well_level']
+
+        self.gain = self._gain_list.get(self._scaid, 2.0)
+
+    # Similar to scaid.setter, except if detector ID is specified.
+    @detid.setter
+    def detid(self, value):
+        """Set detector ID (A1, A2, ..., B4, B5). Automatically updates other relevant attributes."""
+        _check_list(value, self.detid_list, var_name='detid')
+
+        # Switch dictioary keys and values, grab the corresponding SCA ID,
+        # and then call scaid.setter
+        newdict = {y:x for x,y in self._scaids.items()}
+        self.scaid = newdict.get(value)
+
+    @property
+    def scaid_list(self):
+        """Allowed SCA IDs"""
+        return sorted(list(self._scaids.keys()))
+
+    @property
+    def detid_list(self):
+        """Allowed Detector IDs"""
+        return sorted(list(self._scaids.values()))
+
+    @property
+    def module(self):
+        """NIRCam modules A or B (inferred from detector ID)"""
+        return self._detid[0]
+
+    @property
+    def channel(self):
+        """Detector channel 'SW' or 'LW' (inferred from detector ID)"""
+        return 'LW' if self.detid.endswith('5') else 'SW'
+
+    def pixel_noise(self, fsrc=0.0, fzodi=0.0, fbg=0.0, rn=None, ktc=None, idark=None,
+        p_excess=None, ng=None, nf=None, verbose=False, **kwargs):
+        """Noise values per pixel.
+        
+        Return theoretical noise calculation for the specified MULTIACCUM exposure 
+        in terms of e-/sec. This uses the pre-defined detector-specific noise 
+        properties. Can specify flux of a source as well as background and 
+        zodiacal light (in e-/sec/pix). After getting the noise per pixel per
+        ramp (integration), value(s) are divided by the sqrt(NINT) to return
+        the final noise
+
+        Parameters
+        ----------
+        fsrc : float or image
+            Flux of source in e-/sec/pix
+        fzodi : float or image
+            Flux of the zodiacal background in e-/sec/pix
+        fbg : float or image
+            Flux of telescope background in e-/sec/pix
+        idark : float or image
+            Option to specify dark current in e-/sec/pix.
+        rn : float
+            Option to specify Read Noise per pixel (e-).
+        ktc : float
+            Option to specify kTC noise (in e-). Only valid for single frame (n=1)
+        p_excess : array-like
+            Optional. An array or list of two elements that holds the parameters
+            describing the excess variance observed in effective noise plots.
+            By default these are both 0. For NIRCam detectors, recommended
+            values are [1.0,5.0] for SW and [1.5,10.0] for LW.
+        ng : None or int or image
+            Option to explicitly states number of groups. This is specifically
+            used to enable the ability of only calculating pixel noise for
+            unsaturated groups for each pixel. If a numpy array, then it should
+            be the same shape as `fsrc` image. By default will use `self.ngroup`.
+        verbose : bool
+            Print out results at the end.
+
+        Keyword Arguments
+        -----------------
+        ideal_Poisson : bool
+            If set to True, use total signal for noise estimate,
+            otherwise MULTIACCUM equation is used.
+
+        Notes
+        -----
+        fsrc, fzodi, and fbg are functionally the same as they are immediately summed.
+        They can also be single values or multiple elements (list, array, tuple, etc.).
+        If multiple inputs are arrays, make sure their array sizes match.
+        
+        """
+
+        ma = self.multiaccum
+        if ng is None:
+            ng = ma.ngroup
+        if nf is None:
+            nf = ma.nf
+        if rn is None:
+            rn = self.read_noise
+        if ktc is None:
+            ktc = self.ktc
+        if p_excess is None:
+            p_excess = self.p_excess
+        if idark is None:
+            idark = self.dark_current
+
+        # Pixel noise per ramp (e-/sec/pix)
+        pn = pix_noise(ngroup=ng, nf=nf, nd2=ma.nd2, tf=self.time_frame, 
+                       rn=rn, ktc=ktc, p_excess=p_excess, 
+                       idark=idark, fsrc=fsrc, fzodi=fzodi, fbg=fbg, **kwargs)
+    
+        # Divide by sqrt(Total Integrations)
+        final = pn / np.sqrt(ma.nint)
+        if verbose:
+            print('Noise (e-/sec/pix): {}'.format(final))
+            print('Total Noise (e-/pix): {}'.format(final*self.time_exp))
+
+        return final
+
+    @property
+    def fastaxis(self):
+        """Fast readout direction in sci coords"""
+        # https://jwst-pipeline.readthedocs.io/en/latest/jwst/references_general/references_general.html#orientation-of-detector-image
+        # 481, 3, 5, 7, 9 have fastaxis equal -1
+        # Others have fastaxis equal +1
+        fastaxis = -1 if np.mod(self.scaid,2)==1 else +1
+        return fastaxis
+    @property
+    def slowaxis(self):
+        """Slow readout direction in sci coords"""
+        # https://jwst-pipeline.readthedocs.io/en/latest/jwst/references_general/references_general.html#orientation-of-detector-image
+        # 481, 3, 5, 7, 9 have slowaxis equal +2
+        # Others have slowaxis equal -2
+        slowaxis = +2 if np.mod(self.scaid,2)==1 else -2
+        return slowaxis
+
+    def make_header(self, filter=None, pupil=None, obs_time=None, **kwargs):
+        """
+        Create a generic NIRCam FITS header.
+
+        Parameters
+        ----------
+        filter :str
+            Name of filter element.
+        pupil : str
+            Name of pupil element.
+        obs_time : datetime 
+            Specifies when the observation was considered to be executed.
+            If not specified, then it will choose the current time.
+            This must be a datetime object:
+            
+            >>> datetime.datetime(2016, 5, 9, 11, 57, 5, 796686)
+        """
+        return nrc_header(self, filter=filter, pupil=pupil, obs_time=obs_time, **kwargs)
+
+
+
 def nrc_header(det_class, filter=None, pupil=None, obs_time=None, header=None,
                DMS=True, targ_name=None):
-    """Simulated header
+    """Simulate header
 
     Create a generic NIRCam FITS header from a detector_ops class.
 
@@ -1216,11 +1505,12 @@ def nrc_header(det_class, filter=None, pupil=None, obs_time=None, header=None,
 
     return hdr
 
+
 def config2(input, intype='int'):
     """NIRCam CONFIG2 (0x4011) Register
 
     Return a dictionary of configuration parameters depending on the
-    value of CONFIG2 register (4011).
+    value of CONFIG2 register (0x4011).
 
     Parameters
     ----------
@@ -1297,290 +1587,6 @@ def config2(input, intype='int'):
     d['15_pa_reset']     = 'int' if bool(int(input2[15])) else 'frame'
 
     return d
-
-
-class DetectorOps(det_timing):
-    """ 
-    Class to hold detector operations information. Includes SCA attributes such as
-    detector names and IDs as well as :class:`multiaccum` class for ramp settings.
-
-    Parameters
-    ----------------
-    detector : int, str
-        NIRCam detector ID (481-490) or SCA ID (A1-B5).
-    wind_mode : str
-        Window mode type 'FULL', 'STRIPE', 'WINDOW'.
-    xpix : int
-        Size of window in x-pixels for frame time calculation.
-    ypix : int
-        Size of window in y-pixels for frame time calculation.
-    x0 : int
-        Lower-left x-coord position of detector window.
-    y0 : int
-        Lower-left y-coord position of detector window.
-    nff : int
-        Number of fast row resets.
-
-    Keyword Args
-    ------------
-    read_mode : str
-        NIRCam Ramp Readout mode such as 'RAPID', 'BRIGHT1', etc.
-    nint : int
-        Number of integrations (ramps).
-    ngroup : int
-        Number of groups in a integration.
-    nf : int
-        Number of frames per group.
-    nd1 : int
-        Number of drop frame after reset (before first group read). 
-    nd2 : int
-        Number of drop frames within a group (ie., groupgap). 
-    nd3 : int
-        Number of drop frames after final read frame in ramp. 
-
-
-    Examples
-    --------
-    Use kwargs functionality to pass keywords to the multiaccum class.
-    
-    Send via a dictionary of keywords and values:
-        >>> kwargs = {'read_mode':'RAPID', 'nint':5, 'ngroup':10}
-        >>> d = DetectorOps(**kwargs)
-    
-    Set the keywords directly:   
-        >>> d = DetectorOps(read_mode='RAPID', nint=5, ngroup=10)
-    """
-
-    def __init__(self, detector=481, wind_mode='FULL', xpix=2048, ypix=2048, 
-                 x0=0, y0=0, nff=None, **kwargs):
-                 
-        det_timing.__init__(self, wind_mode=wind_mode, xpix=xpix, ypix=ypix, 
-                            x0=x0, y0=y0, mode='JWST', nff=nff, **kwargs)
-
-        # Typical values for SW/LW detectors that get saved based on SCA ID.
-        # After setting the SCA ID, these various parameters can be updated,
-        # however they will be reset whenever the SCA ID is modified.
-        #   - Pixel Scales in arcsec/pix
-        #   - Well saturation level in e-
-        #   - Typical dark current values in e-/sec (ISIM CV3)
-        #   - Read Noise in e-
-        #   - IPC and PPC in %
-        #   - p_excess: Parameters that describe the excess variance observed in
-        #     effective noise plots.
-        self._properties_SW = {'pixel_scale':0.0311, 'dark_current':0.002, 'read_noise':11.5, 
-                               'IPC':0.54, 'PPC':0.09, 'p_excess':(1.0,5.0), 'ktc':37.6,
-                               'well_level':100e3, 'well_level_old':81e3}
-        self._properties_LW = {'pixel_scale':0.0630, 'dark_current':0.034, 'read_noise':10.0, 
-                               'IPC':0.60, 'PPC':0.19, 'p_excess':(1.5,10.0), 'ktc':36.8,
-                               'well_level':80e3, 'well_level_old':75e3}
-        # Automatically set the pixel scale based on detector selection
-        self.auto_pixscale = True  
-
-        self._gain_list = {481:2.07, 482:2.01, 483:2.16, 484:2.01, 485:1.83, 
-                           486:2.00, 487:2.42, 488:1.93, 489:2.30, 490:1.85}
-
-        self._scaids = {481:'A1', 482:'A2', 483:'A3', 484:'A4', 485:'A5',
-                        486:'B1', 487:'B2', 488:'B3', 489:'B4', 490:'B5'}
-        # Allow user to specify name using either SCA ID or Detector ID (ie., 481 or 'A1')
-        try: # First, attempt to set SCA ID
-            self.scaid = detector 
-        except ValueError: 
-            try: # If that doesn't work, then try to set Detector ID
-                self.detid = detector
-            except ValueError: # If neither work, raise ValueError exception
-                raise ValueError("Invalid detector: {0} \n\tValid names are: {1},\n\t{2}" \
-                      .format(detector, ', '.join(self.detid_list), \
-                      ', '.join(str(e) for e in self.scaid_list)))
-
-        _log.info('Initializing SCA {}/{}'.format(self.scaid,self.detid))
-
-    @property
-    def scaid(self):
-        """Selected SCA ID from detectors in the `scaid_list` attribute. 481, 482, etc."""
-        return self._scaid
-
-    @property
-    def detid(self):
-        """Selected Detector ID from detectors in the `detid_list` attribute. A1, A2, etc."""
-        return self._detid
-
-    @property
-    def detname(self):
-        """Selected Detector ID from detectors in the `scaid_list` attribute. NRCA1, NRCA2, etc."""
-        return self._detname
-
-    # Used for setting the SCA ID then updating all the other detector properties
-    @scaid.setter
-    def scaid(self, value):
-        """Set SCA ID (481, 482, ..., 489, 490). Automatically updates other relevant attributes."""
-        _check_list(value, self.scaid_list, var_name='scaid')
-
-        self._scaid = value
-        self._detid = self._scaids.get(self._scaid)
-
-        # Detector Name (as stored in FITS headers): NRCA1, NRCALONG, etc.
-        if self.channel=='LW': self._detname = 'NRC' + self.module + 'LONG'
-        else:  self._detname = 'NRC' + self._detid
-
-        # Select various detector properties (pixel scale, dark current, read noise, etc)
-        # depending on LW or SW detector
-        dtemp = self._properties_LW if self.channel=='LW' else self._properties_SW
-        if self.auto_pixscale: self.pixelscale = dtemp['pixel_scale']
-        self.ktc          = dtemp['ktc']
-        self.dark_current = dtemp['dark_current']
-        self.read_noise   = dtemp['read_noise']
-        self.IPC          = dtemp['IPC']
-        self.PPC          = dtemp['PPC']
-        self.p_excess     = dtemp['p_excess']
-        self.well_level   = dtemp['well_level']
-
-        self.gain = self._gain_list.get(self._scaid, 2.0)
-
-    # Similar to scaid.setter, except if detector ID is specified.
-    @detid.setter
-    def detid(self, value):
-        """Set detector ID (A1, A2, ..., B4, B5). Automatically updates other relevant attributes."""
-        _check_list(value, self.detid_list, var_name='detid')
-
-        # Switch dictioary keys and values, grab the corresponding SCA ID,
-        # and then call scaid.setter
-        newdict = {y:x for x,y in self._scaids.items()}
-        self.scaid = newdict.get(value)
-
-    @property
-    def scaid_list(self):
-        """Allowed SCA IDs"""
-        return sorted(list(self._scaids.keys()))
-
-    @property
-    def detid_list(self):
-        """Allowed Detector IDs"""
-        return sorted(list(self._scaids.values()))
-
-    @property
-    def module(self):
-        """NIRCam modules A or B (inferred from detector ID)"""
-        return self._detid[0]
-
-    @property
-    def channel(self):
-        """Detector channel 'SW' or 'LW' (inferred from detector ID)"""
-        return 'LW' if self.detid.endswith('5') else 'SW'
-
-    def pixel_noise(self, fsrc=0.0, fzodi=0.0, fbg=0.0, rn=None, ktc=None, idark=None,
-        p_excess=None, ng=None, nf=None, verbose=False, **kwargs):
-        """Noise values per pixel.
-        
-        Return theoretical noise calculation for the specified MULTIACCUM exposure 
-        in terms of e-/sec. This uses the pre-defined detector-specific noise 
-        properties. Can specify flux of a source as well as background and 
-        zodiacal light (in e-/sec/pix). After getting the noise per pixel per
-        ramp (integration), value(s) are divided by the sqrt(NINT) to return
-        the final noise
-
-        Parameters
-        ----------
-        fsrc : float or image
-            Flux of source in e-/sec/pix
-        fzodi : float or image
-            Flux of the zodiacal background in e-/sec/pix
-        fbg : float or image
-            Flux of telescope background in e-/sec/pix
-        idark : float or image
-            Option to specify dark current in e-/sec/pix.
-        rn : float
-            Option to specify Read Noise per pixel (e-).
-        ktc : float
-            Option to specify kTC noise (in e-). Only valid for single frame (n=1)
-        p_excess : array-like
-            Optional. An array or list of two elements that holds the parameters
-            describing the excess variance observed in effective noise plots.
-            By default these are both 0. For NIRCam detectors, recommended
-            values are [1.0,5.0] for SW and [1.5,10.0] for LW.
-        ng : None or int or image
-            Option to explicitly states number of groups. This is specifically
-            used to enable the ability of only calculating pixel noise for
-            unsaturated groups for each pixel. If a numpy array, then it should
-            be the same shape as `fsrc` image. By default will use `self.ngroup`.
-        verbose : bool
-            Print out results at the end.
-
-        Keyword Arguments
-        -----------------
-        ideal_Poisson : bool
-            If set to True, use total signal for noise estimate,
-            otherwise MULTIACCUM equation is used.
-
-        Notes
-        -----
-        fsrc, fzodi, and fbg are functionally the same as they are immediately summed.
-        They can also be single values or multiple elements (list, array, tuple, etc.).
-        If multiple inputs are arrays, make sure their array sizes match.
-        
-        """
-
-        ma = self.multiaccum
-        if ng is None:
-            ng = ma.ngroup
-        if nf is None:
-            nf = ma.nf
-        if rn is None:
-            rn = self.read_noise
-        if ktc is None:
-            ktc = self.ktc
-        if p_excess is None:
-            p_excess = self.p_excess
-        if idark is None:
-            idark = self.dark_current
-
-        # Pixel noise per ramp (e-/sec/pix)
-        pn = pix_noise(ngroup=ng, nf=nf, nd2=ma.nd2, tf=self.time_frame, 
-                       rn=rn, ktc=ktc, p_excess=p_excess, 
-                       idark=idark, fsrc=fsrc, fzodi=fzodi, fbg=fbg, **kwargs)
-    
-        # Divide by sqrt(Total Integrations)
-        final = pn / np.sqrt(ma.nint)
-        if verbose:
-            print('Noise (e-/sec/pix): {}'.format(final))
-            print('Total Noise (e-/pix): {}'.format(final*self.time_exp))
-
-        return final
-
-    @property
-    def fastaxis(self):
-        """Fast readout direction in sci coords"""
-        # https://jwst-pipeline.readthedocs.io/en/latest/jwst/references_general/references_general.html#orientation-of-detector-image
-        # 481, 3, 5, 7, 9 have fastaxis equal -1
-        # Others have fastaxis equal +1
-        fastaxis = -1 if np.mod(self.scaid,2)==1 else +1
-        return fastaxis
-    @property
-    def slowaxis(self):
-        """Slow readout direction in sci coords"""
-        # https://jwst-pipeline.readthedocs.io/en/latest/jwst/references_general/references_general.html#orientation-of-detector-image
-        # 481, 3, 5, 7, 9 have slowaxis equal +2
-        # Others have slowaxis equal -2
-        slowaxis = +2 if np.mod(self.scaid,2)==1 else -2
-        return slowaxis
-
-    def make_header(self, filter=None, pupil=None, obs_time=None, **kwargs):
-        """
-        Create a generic NIRCam FITS header.
-
-        Parameters
-        ----------
-        filter :str
-            Name of filter element.
-        pupil : str
-            Name of pupil element.
-        obs_time : datetime 
-            Specifies when the observation was considered to be executed.
-            If not specified, then it will choose the current time.
-            This must be a datetime object:
-            
-            >>> datetime.datetime(2016, 5, 9, 11, 57, 5, 796686)
-        """
-        return nrc_header(self, filter=filter, pupil=pupil, obs_time=obs_time, **kwargs)
 
 
 
