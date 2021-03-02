@@ -141,7 +141,7 @@ def biweightMean(inputData, axis=None, dtype=None, iterMax=25):
     return y0
 
 
-def mean(inputData, Cut=3.0, axis=None, dtype=None, keepdims=False, 
+def mean(inputData, Cut=5.0, axis=None, dtype=None, keepdims=False, 
     return_std=False, return_mask=False):
     """Robust Mean
     

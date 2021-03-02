@@ -45,6 +45,8 @@ def reffix_hxrg(cube, nchans=4, in_place=True, fixcol=False, **kwargs):
         Specify the number of top reference rows. (default: 4)
     nbot : int
         Specify the number of bottom reference rows. (default: 4)
+    mean_func : func
+        Function used to calculate averages. (default: `robust.mean`)
 
     left_ref : bool
         Include left reference cols when correcting 1/f noise. (default: True)
@@ -65,7 +67,7 @@ def reffix_hxrg(cube, nchans=4, in_place=True, fixcol=False, **kwargs):
             * 'pixel' : For each ref pixel, subtract its avg value from all frames.
 
     savgol : bool
-        Using Savitsky-Golay filter method rather than FFT. (default: True)
+        Use Savitsky-Golay filter method rather than FFT. (default: True)
     winsize : int
         Size of the window filter. (default: 31)
     order : int
@@ -132,6 +134,11 @@ def reffix_amps(cube, nchans=4, in_place=True, altcol=True, supermean=False,
         Specify the number of top reference rows.
     nbot : int
         Specify the number of bottom reference rows.
+
+    Keyword Args
+    ------------
+    mean_func : func
+        Function used to calculate averages.
     """
 
     if not in_place:
@@ -177,7 +184,7 @@ def reffix_amps(cube, nchans=4, in_place=True, altcol=True, supermean=False,
     smean = robust.mean(refs_all) if supermean else 0.0
     
     # Calculate avg reference values for each frame and channel
-    refs_amps_avg = calc_avg_amps(refs_all, cube.shape, nchans=nchans, altcol=altcol)
+    refs_amps_avg = calc_avg_amps(refs_all, cube.shape, nchans=nchans, altcol=altcol, **kwargs)
         
     for ch in range(nchans):
         # Channel indices
@@ -293,7 +300,7 @@ def ref_filter(cube, nchans=4, in_place=True, avg_type='frame', perint=False,
 
     
 
-def calc_avg_amps(refs_all, data_shape, nchans=4, altcol=True):
+def calc_avg_amps(refs_all, data_shape, nchans=4, altcol=True, mean_func=robust.mean, **kwargs):
     """Calculate amplifier averages
     
     Save the average reference value for each amplifier in each frame.
@@ -313,6 +320,8 @@ def calc_avg_amps(refs_all, data_shape, nchans=4, altcol=True):
     altcol : bool
         Calculate separate reference values for even/odd columns? 
         Default=True.
+    mean_func : func
+        Function used to calculate averages.
     """
         
     nz, ny, nx = data_shape
@@ -331,8 +340,8 @@ def calc_avg_amps(refs_all, data_shape, nchans=4, altcol=True):
             refs_ch2 = refs_all[:,:,ich1+1:ich2:2].reshape((nz,-1))
 
             # Take the resistant mean
-            chavg1 = robust.mean(refs_ch1,axis=1)
-            chavg2 = robust.mean(refs_ch2,axis=1)
+            chavg1 = mean_func(refs_ch1,axis=1)
+            chavg2 = mean_func(refs_ch2,axis=1)
     
             refs_amps_avg1.append(chavg1)
             refs_amps_avg2.append(chavg2)
@@ -347,7 +356,7 @@ def calc_avg_amps(refs_all, data_shape, nchans=4, altcol=True):
             refs_ch = refs_all[:,:,ich1:ich2].reshape((nz,-1))
 
             # Take the resistant mean and reshape for broadcasting
-            chavg = robust.mean(refs_ch,axis=1).reshape([-1,1,1])
+            chavg = mean_func(refs_ch,axis=1).reshape([-1,1,1])
             refs_amps_avg.append(chavg)
             
         return np.array(refs_amps_avg)
@@ -674,6 +683,8 @@ def chrem_med(imarr, nchans=4, yind=None, bpmask=None, in_place=True,
     due to imperfect tracking of reference pixels. This function
     determines the average offset from zero of each channel
     and subtracts the mean/median from the entire channel.
+    Essentially uses a defined section of active pixels as a
+    set of reference pixels to remove background offsets.
     
     Parameters
     ----------
@@ -743,7 +754,7 @@ def chrem_med(imarr, nchans=4, yind=None, bpmask=None, in_place=True,
 
 def channel_averaging(im, nchans=4, same_scan_direction=False, off_chans=True, 
     mn_func=np.nanmedian, **kwargs):
-    """Estimate common 1/f noise in image
+    """ Estimate common 1/f noise in image
 
     For a given image, average the channels together to find 
     the common pattern noise present within the channels.
@@ -763,7 +774,7 @@ def channel_averaging(im, nchans=4, same_scan_direction=False, off_chans=True,
         By default fast-scan readout direction is ``[-->,<--,-->,<--]``
         If ``same_scan_direction``, then all ``-->``
     off_chans : bool
-        Calculate indepenent values for each channel using the off channels.
+        Calculate independent values for each channel using the off channels.
     mn_func : function
         What function should we use to calculate the average.
         Default `np.nanmedian`
