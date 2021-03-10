@@ -19,7 +19,7 @@ The `DetectorOps` class is then a NIRCam-specific subclass of `det_timing` that 
 
 ## Installing from source
 
-To get the most up to date version of ``ref_pixels``, install directly from source. The [development version](https://github.com/JarronL/pynrc>) can be found on GitHub.
+To get the most up to date version of ``ref_pixels``, install directly from source. 
 
 In this case, you will need to clone the git repository:
 ```
