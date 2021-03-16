@@ -35,4 +35,4 @@ For development purposes, you can use editable installations:
 $ cd ref_pixels
 $ pip install -e .
 ```
-This is useful for helping to develop the code, creating bug reports, and pull requests to GitHub. Since the code then lives in your local GitHub directory, this method makes it simple to pull the latest updates straight from the GitHub repo, which are then immediately available in your python installation without needing to reinstall.
+This is useful for helping to develop the code, creating bug reports, switching between branches and submitting pull requests to GitHub. Since the code then lives in your local GitHub directory, this method makes it simple to pull the latest updates straight from the GitHub repo, which are then immediately available in your python installation without needing to reinstall.
