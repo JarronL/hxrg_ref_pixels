@@ -4,7 +4,7 @@ def var_ex_model(ng, nf, params):
     """ Variance Excess Model
 
     Measured pixel variance shows a slight excess above the measured values.
-    The input `params` describes this excess variance. This funciton can be 
+    The input `params` describes this excess variance. This function can be 
     used to fit the excess variance for a variety of different readout patterns.
     """
     return 12. * (ng - 1.)/(ng + 1.) * params[0]**2 - params[1] / nf**0.5
@@ -20,17 +20,17 @@ def pix_noise(ngroup=2, nf=1, nd2=0, tf=10.73677, rn=15.0, ktc=29.0, p_excess=(0
     Parameters
     ----------
     n : int
-        Number of groups in integration rampl
+        Number of groups in integration ramp
     m : int
-        Number of frames in each groupl
+        Number of frames in each group
     s : int
-        Number of dropped frames in each groupl
+        Number of dropped frames in each group
     tf : float
         Frame time
     rn : float
         Read Noise per pixel (e-).
     ktc : float
-        kTC noise (in e-). Only valid for single frame (n=1)l
+        kTC noise (in e-). Only valid for single frame (n=1)
     p_excess : array-like
         An array or list of two elements that holds the parameters
         describing the excess variance observed in effective noise plots.
