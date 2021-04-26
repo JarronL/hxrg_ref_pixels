@@ -318,7 +318,19 @@ class det_timing(object):
             loh = 3
             nchans = 32
             reset_type = 'line'
-            if nff is None: nff = 0 
+            if nff is None: nff = 0
+        elif self._opmode == 'SHARK_100':
+            pixrate = 2.5e5
+            loh = 10
+            nchans = 4
+            reset_type = 'pixel'
+            nff = 0
+        elif self._opmode == 'SHARK_250':
+            pixrate = 2.5e5
+            loh = 10
+            nchans = 4
+            reset_type = 'pixel'
+            nff = 0
 
         self._detector_pixels = 2048
         self._nchans = nchans
@@ -469,7 +481,7 @@ class det_timing(object):
     def _fix_precision(self, input):
         """
         Many timing calculations result from minor precision issues with very
-        small numbers (1e-16) added the real result. This function attempts
+        small numbers (1e-16) added to the real result. This function attempts
         to truncate these small innaccuracies by dividing by the clock sample
         time to get the total integer number of clock cycles.
         """
@@ -540,7 +552,7 @@ class det_timing(object):
         
     @property
     def time_frame(self):
-        """Determine frame times based on xpix, ypix, and wind_mode."""
+        """Determine frame time (sec) based on xpix, ypix, and wind_mode."""
 
         chsize = self.chsize                   # Number of x-pixels within a channel
         xticks = chsize + self._line_overhead  # Clock ticks per line
@@ -553,8 +565,15 @@ class det_timing(object):
         # Total number of clock ticks per frame (reset, read, and drops)
         fticks = xticks*flines + pix_offset
 
+        # SHARK-NIR burst-stripe skipped lines
+        if 'SHARK' in self._opmode:
+            xtra_time = 1.2e-6 * (1e5 / self._pixel_rate) * (self._detector_pixels - self.ypix)
+        else:
+            xtra_time = 0
+
         # Return frame time
-        return fticks / self._pixel_rate
+        res = fticks / self._pixel_rate + xtra_time
+        return self._fix_precision(res)
 
     @property
     def time_group(self):
@@ -756,8 +775,10 @@ class det_timing(object):
         """Create array of pixel times for a single ramp. 
         
         Each pixel value corresponds to the precise time at which
-        that pixel was read out during the ramp acquisiton. The first
-        pixel(s) have t=0.
+        that pixel was read out during the ramp acquisition. The first
+        pixel(s) have t=0. 
+        
+        TODO: Update for burst-stripe style detectors (e.g., SHARK-NIR).
         
         Parameters
         ----------
@@ -941,8 +962,9 @@ class det_timing(object):
 
 class DetectorOps(det_timing):
     """ 
-    Class to hold detector operations information. Includes SCA attributes such as
-    detector names and IDs as well as :class:`multiaccum` class for ramp settings.
+    NIRCam-specifc class to hold detector operations information. 
+    Includes SCA attributes such as detector names and IDs as well 
+    as :class:`multiaccum` class for ramp settings.
 
     Parameters
     ----------------
