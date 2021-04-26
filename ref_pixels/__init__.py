@@ -32,5 +32,5 @@ conf = Conf()
 from .logging_utils import setup_logging#, restart_logging
 setup_logging(conf.default_logging_level, verbose=False)
 
-from .ref_pixels import reffix_hxrg, chrem_med, channel_averaging, channel_smooth_savgol
+from .ref_pixels import reffix_hxrg, chrem_med, channel_averaging, channel_smooth_savgol, get_fits_data
 from .fast_poly import jl_poly, jl_poly_fit

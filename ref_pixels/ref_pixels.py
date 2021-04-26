@@ -9,8 +9,11 @@ from . import robust
 from .logging_utils import setup_logging
 from .detops import DetectorOps
 
+from astropy.io import fits
+
 import logging
 _log = logging.getLogger('refpix')
+
 
 def reffix_hxrg(cube, nchans=4, in_place=True, fixcol=False, **kwargs):
     """Reference pixel correction function
@@ -1417,3 +1420,107 @@ class NRC_refs(object):
         nz, ny, nx = self.data.shape
         self.data -= self.refs_side_smth.reshape([nz,ny,1])
         
+#######################################
+# Open and return FITS info
+#######################################
+
+def get_fits_data(fits_file, return_header=False, bias=None, reffix=False, 
+                  DMS=False, int_ind=0, grp_ind=None, **kwargs):
+    
+    """
+    Parameters
+    ==========
+    fname : str
+        FITS file (including path) to open.
+    return_header : bool
+        Return header as well as data?
+    bias : ndarray
+        If specified, will subtract bias image from ramp.
+    reffix : bool
+        Perform reference correction? 
+    DMS : bool
+        Is the FITS file DMS format?
+    int_ind : int
+        If DMS format, select integration index to extract.
+        DMS FITS files usually have all integrations within
+        a given exposure in a single FITS extension, which
+        can be quite large.
+    grp_ind : 2-element array
+        Option to index specific groups from the data.
+        For instance `grp_ind=[0:10]` will select only
+        the first 10 groups from the FITS cube.
+    
+    reffix Args
+    ===========
+    altcol : bool
+        Calculate separate reference values for even/odd columns. (default: True)
+    supermean : bool
+        Add back the overall mean of the reference pixels. (default: False)
+    top_ref : bool
+        Include top reference rows when correcting channel offsets. (default: True)
+    bot_ref : bool
+        Include bottom reference rows when correcting channel offsets. (default: True)
+    ntop : int
+        Specify the number of top reference rows. (default: 4)
+    nbot : int
+        Specify the number of bottom reference rows. (default: 4)
+    mean_func : func
+        Function used to calculate averages. (default: `robust.mean`)
+
+    left_ref : bool
+        Include left reference cols when correcting 1/f noise. (default: True)
+    right_ref : bool
+        Include right reference cols when correcting 1/f noise. (default: True)
+    nleft : int
+        Specify the number of left reference columns. (default: 4)
+    nright : int
+        Specify the number of right reference columns. (default: 4)
+    perint : bool
+        Smooth side reference pixel per integration, otherwise do frame-by-frame.
+        (default: False)
+    avg_type :str
+        Type of side column averaging to perform to determine ref pixel drift. 
+        Allowed values are 'pixel', 'frame', or 'int' (default: 'frame'):
+            * 'int'   : Subtract the avg value of all side ref pixels in ramp.
+            * 'frame' : For each frame, get avg of side ref pixels and subtract framewise.
+            * 'pixel' : For each ref pixel, subtract its avg value from all frames.
+
+    savgol : bool
+        Use Savitsky-Golay filter method rather than FFT. (default: True)
+    winsize : int
+        Size of the window filter. (default: 31)
+    order : int
+        Order of the polynomial used to fit the samples. (default: 3)
+    """
+
+    # Want to automatically determine if FITS files have DMS structure
+    hdul = fits.open(fits_file)
+    hdr = hdul[0].header
+
+    if DMS:
+        if int_ind > hdr['NINTS']-1:
+            hdul.close()
+            nint = hdr['NINTS']
+            raise ValueError(f'int_num must be less than {nint}.')
+
+        data = hdul[1].data[int_ind]
+    else:
+        data = hdul[0].data
+
+    # Select group indices
+    if grp_ind is not None:
+        data = data[grp_ind[0]:grp_ind[1]]
+    # Convert to float
+    data = data.astype(np.float)
+    hdul.close()
+
+    if bias is not None:
+        data -= bias
+    
+    if reffix:
+        data = reffix_hxrg(data, **kwargs)
+
+    if return_header:
+        return data, hdr
+    else:
+        return data
