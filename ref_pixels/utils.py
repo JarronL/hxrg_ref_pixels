@@ -1,4 +1,7 @@
 import numpy as np
+from tqdm.auto import trange
+
+from .fast_poly import jl_poly_fit, jl_poly
 
 def var_ex_model(ng, nf, params):
     """ Variance Excess Model
@@ -19,11 +22,11 @@ def pix_noise(ngroup=2, nf=1, nd2=0, tf=10.73677, rn=15.0, ktc=29.0, p_excess=(0
 
     Parameters
     ----------
-    n : int
+    ngroup : int
         Number of groups in integration ramp
-    m : int
+    nf : int
         Number of frames in each group
-    s : int
+    nd2 : int
         Number of dropped frames in each group
     tf : float
         Frame time
@@ -151,6 +154,211 @@ def pix_noise(ngroup=2, nf=1, nd2=0, tf=10.73677, rn=15.0, ktc=29.0, p_excess=(0
 
     return noise
 
+
+#######################################
+# Linearity and Gain
+#######################################
+
+# Determine saturation level in ADU (relative to bias)
+def find_sat(data, bias=None, ref_info=[4,4,4,4], bit_depth=16):
+    """
+    Given a data cube, find the values in ADU in which data
+    reaches hard saturation.
+    """
+
+    # Maximum possible value corresponds to bit depth
+    ref_vals = 2**bit_depth-1
+    # sat_max can be larger than bit depth if linearity or gain correction has occurred
+    sat_max = np.max([2**bit_depth-1, data.max()])
+    sat_min = 0
+
+    # Subtract bias?
+    nz, ny, nx = data.shape
+    imarr = data if bias is None else data - bias
+
+    # Data can be characterized as large differences at start,
+    # followed by decline and then difference of 0 at hard saturation
+
+    # Determine difference between samples
+    diff_arr = imarr[1:] - imarr[0:-1]
+
+    # Select pixels to determine individual saturation values
+    diff_max = np.median(diff_arr[0]) / 10
+    diff_min = 100
+
+    # Ensure a high rate at the beginning and a flat rate at the end
+    sat_mask = (diff_arr[0]>diff_max) & (np.abs(diff_arr[-1]) < diff_min)
+
+    # Median value to use for pixels that didn't reach saturation
+    # sat_med = np.median(imarr[-1, sat_mask])
+    
+    # Initialize saturation array with median
+    # sat_arr = np.ones([ny,nx]) * sat_med
+
+    # Initialize saturation as max-min
+    sat_arr = imarr[-1] - imarr[0]
+    sat_arr[sat_mask] = imarr[-1, sat_mask]
+
+    # Bound between 0 and bit depth
+    sat_arr[sat_arr<sat_min] = sat_min
+    sat_arr[sat_arr>sat_max] = sat_max
+
+    # Reference pixels don't saturate
+    # [bottom, upper, left, right]
+    br, ur, lr, rr = ref_info
+    ref_mask = np.zeros([ny,nx], dtype=bool)
+    if br>0: ref_mask[0:br,:] = True
+    if ur>0: ref_mask[-ur:,:] = True
+    if lr>0: ref_mask[:,0:lr] = True
+    if rr>0: ref_mask[:,-rr:] = True
+    sat_arr[ref_mask] = ref_vals
+    
+    return sat_arr
+
+# Fit unsaturated data and return coefficients
+def cube_fit(tarr, data, bias=None, sat_vals=None, sat_frac=0.95, 
+             deg=1, fit_zero=False, verbose=False, ref_info=[4,4,4,4],
+             use_legendre=False, lxmap=None, return_lxmap=False, **kwargs):
+        
+    nz, ny, nx = data.shape
+    
+    # Subtract bias?
+    imarr = data if bias is None else data - bias
+    
+    # Get saturation levels
+    if sat_vals is None:
+        sat_vals = find_sat(imarr, ref_info=ref_info, **kwargs)
+        
+    # Array of masked pixels (saturated)
+    mask_good = imarr < sat_frac*sat_vals
+    
+    # Reshape for all pixels in single dimension
+    imarr = imarr.reshape([nz, -1])
+    mask_good = mask_good.reshape([nz, -1])
+
+    # Initial 
+    cf = np.zeros([deg+1, nx*ny])
+    if return_lxmap:
+        lx_min = np.zeros([nx*ny])
+        lx_max = np.zeros([nx*ny])
+
+    # For each 
+    npix_sum = 0
+    i0 = 0 if fit_zero else 1
+    for i in np.arange(i0,nz)[::-1]:
+        ind = (cf[1] == 0) & (mask_good[i])
+        npix = np.sum(ind)
+        npix_sum += npix
+        
+        if verbose:
+            print(i+1,npix,npix_sum, 'Remaining: {}'.format(nx*ny-npix_sum))
+            
+        if npix>0:
+            if fit_zero:
+                x = np.concatenate(([0], tarr[0:i+1]))
+                y = np.concatenate((np.zeros([1, np.sum(ind)]), imarr[0:i+1,ind]), axis=0)
+            else:
+                x, y = (tarr[0:i+1], imarr[0:i+1,ind])
+
+            if return_lxmap:
+                lx_min[ind] = np.min(x) if lxmap is None else lxmap[0]
+                lx_max[ind] = np.max(x) if lxmap is None else lxmap[1]
+                
+            # Fit line if too few points relative to polynomial degree
+            if len(x) <= deg+1:
+                cf[0:2,ind] = jl_poly_fit(x,y, deg=1, use_legendre=use_legendre, lxmap=lxmap)
+            else:
+                cf[:,ind] = jl_poly_fit(x,y, deg=deg, use_legendre=use_legendre, lxmap=lxmap)
+
+    imarr = imarr.reshape([nz,ny,nx])
+    mask_good = mask_good.reshape([nz,ny,nx])
+    
+    cf = cf.reshape([deg+1,ny,nx])
+    if return_lxmap:
+        lxmap_arr = np.array([lx_min, lx_max]).reshape([2,ny,nx])
+        return cf, lxmap_arr
+    else:
+        return cf
+
+
+def hist_indices(values, bins=10, return_more=False):
+    """Histogram indices
+    
+    This function bins an input of values and returns the indices for
+    each bin. This is similar to the reverse indices functionality
+    of the IDL histogram routine. It's also much faster than doing
+    a for loop and creating masks/indices at each iteration, because
+    we utilize a sparse matrix constructor. 
+    
+    Returns a list of indices grouped together according to the bin.
+    Only works for evenly spaced bins.
+    
+    Parameters
+    ----------
+    values : ndarray
+        Input numpy array. Should be a single dimension.
+    bins : int or ndarray
+        If bins is an int, it defines the number of equal-width bins 
+        in the given range (10, by default). If bins is a sequence, 
+        it defines the bin edges, including the rightmost edge.
+        In the latter case, the bins must encompass all values.
+    return_more : bool
+        Option to also return the values organized by bin and 
+        the value of the centers (igroups, vgroups, center_vals).
+    
+    Example
+    -------
+    Find the standard deviation at each radius of an image
+    
+        >>> rho = dist_image(image)
+        >>> binsize = 1
+        >>> bins = np.arange(rho.min(), rho.max() + binsize, binsize)
+        >>> igroups, vgroups, center_vals = hist_indices(rho, bins, True)
+        >>> # Get the standard deviation of each bin in image
+        >>> std = binned_statistic(igroups, image, func=np.std)
+
+    """
+    
+    from scipy.sparse import csr_matrix
+    
+    values_flat = values.ravel()
+
+    vmin = values_flat.min()
+    vmax = values_flat.max()
+    N  = len(values_flat)   
+    
+    try: # if bins is an integer
+        binsize = (vmax - vmin) / bins
+        bins = np.arange(vmin, vmax + binsize, binsize)
+        bins[0] = vmin
+        bins[-1] = vmax
+    except: # otherwise assume it's already an array
+        binsize = bins[1] - bins[0]
+    
+    # Central value of each bin
+    center_vals = bins[:-1] + binsize / 2.
+    nbins = center_vals.size
+
+    # TODO: If input bins is an array that doesn't span the full set of input values,
+    # then we need to set a warning.
+    if (vmin<bins[0]) or (vmax>bins[-1]):
+        raise ValueError("Bins must encompass entire set of input values.")
+    digitized = ((nbins-1.0) / (vmax-vmin) * (values_flat-vmin)).astype(np.int)
+    csr = csr_matrix((values_flat, [digitized, np.arange(N)]), shape=(nbins, N))
+
+    # Split indices into their bin groups    
+    igroups = np.split(csr.indices, csr.indptr[1:-1])
+    
+    if return_more:
+        vgroups = np.split(csr.data, csr.indptr[1:-1])
+        return (igroups, vgroups, center_vals)
+    else:
+        return igroups
+    
+
+#######################################
+# Miscellaneous
+#######################################
 
 def _check_list(value, temp_list, var_name=None):
     """
