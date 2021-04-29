@@ -10,6 +10,17 @@ except ImportError:
     __version__ = ''
 
 
+# Update matplotlib settings
+import matplotlib
+rcvals = {'xtick.minor.visible': True, 'ytick.minor.visible': True,
+          'xtick.direction': 'in', 'ytick.direction': 'in',
+          'xtick.top': True, 'ytick.right': True, 'font.family': ['serif'],
+          'xtick.major.size': 6, 'ytick.major.size': 6,
+          'xtick.minor.size': 3, 'ytick.minor.size': 3,
+          'image.interpolation': 'nearest', 'image.origin': 'lower',
+          'figure.figsize': [8,6], 'mathtext.fontset':'cm'}
+matplotlib.rcParams.update(rcvals)
+
 class Conf(_config.ConfigNamespace):
 
     logging_level = _config.ConfigItem(
