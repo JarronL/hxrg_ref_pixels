@@ -384,7 +384,7 @@ class det_timing(object):
 
     @property
     def nout(self):
-        """Number of simultaenous detector output channels stripes"""
+        """Number of simultaneous detector output channels stripes"""
         return 1 if self.wind_mode == 'WINDOW' else self._nchans
 
     @property
@@ -400,12 +400,17 @@ class det_timing(object):
         y1 = self.y0; y2 = y1 + self.ypix
 
         w = 4 # Width of ref pixel border
-        lower = int(w-y1)
-        upper = int(w-(det_size-y2))
-        left  = int(w-x1)
-        right = int(w-(det_size-x2))
-        ref_all = np.array([lower,upper,left,right], dtype='int')
-        ref_all[ref_all<0] = 0
+        if (self.wind_mode == 'FULL') or (self.wind_mode == 'BURST_STRIPE'):
+            # Burst stripe always has all reference pixels by design
+            ref_all = np.ones(4, dtype='int')*w
+        else:
+            lower = int(w-y1)
+            upper = int(w-(det_size-y2))
+            left  = int(w-x1)
+            right = int(w-(det_size-x2))
+            ref_all = np.array([lower,upper,left,right], dtype='int')
+            ref_all[ref_all<0] = 0
+
         return ref_all
 
     @property
@@ -440,7 +445,11 @@ class det_timing(object):
 
         wind_mode = self.wind_mode
 
-        modes = ['FULL', 'STRIPE', 'WINDOW']
+        if 'SHARK' in self._opmode:
+            modes = ['FULL', 'BURST_STRIPE', 'WINDOW']
+        else:
+            modes = ['FULL', 'STRIPE', 'WINDOW']
+
         if wind_mode not in modes:
             wstr = str.join(', ', modes)
             raise ValueError("{} not a valid readout mode. Acceptable values: {}".format(wind_mode, wstr))
@@ -459,7 +468,7 @@ class det_timing(object):
                 _log.warn('In {0} mode, but x0 not 0. Setting y0=0.'.format(wind_mode))
                 y0 = 0
 
-        if (wind_mode == 'STRIPE') or (wind_mode == 'FULL'):
+        if ('STRIPE' in wind_mode) or (wind_mode == 'FULL'):
             if xpix != detpix:
                 _log.warn('In {0} mode, but xpix not {1}. Setting xpix={1}.'.format(wind_mode,detpix))
                 xpix = detpix
@@ -565,8 +574,8 @@ class det_timing(object):
         # Total number of clock ticks per frame (reset, read, and drops)
         fticks = xticks*flines + pix_offset
 
-        # SHARK-NIR burst-stripe skipped lines
-        if 'SHARK' in self._opmode:
+        # Burst-stripe skipped lines
+        if self.wind_mode=='BURST_STRIPE':
             xtra_time = 1.2e-6 * (1e5 / self._pixel_rate) * (self._detector_pixels - self.ypix)
         else:
             xtra_time = 0
@@ -707,68 +716,77 @@ class det_timing(object):
                  ('t_int_tot2', self.time_total_int2)]
         return tuples_to_dict(times, verbose)
 
-    def int_times_table(self, date_start, time_start, offset_seconds=None):
-        """Create and populate the INT_TIMES table, which is saved as a
-        separate extension in the output data file.
+
+    def pixel_noise(self, ng=None, nf=None, verbose=False, **kwargs):
+        """Noise values per pixel.
+        
+        Return theoretical noise calculation for the specified MULTIACCUM exposure 
+        in terms of e-/sec. This uses the pre-defined detector-specific noise 
+        properties. Can specify flux of a source as well as background and 
+        zodiacal light (in e-/sec/pix). After getting the noise per pixel per
+        ramp (integration), value(s) are divided by the sqrt(NINT) to return
+        the final noise
 
         Parameters
         ----------
-        date_start : str
-            Date string of observation ('2020-02-28')
-        time_start : str
-            Time string of observation ('12:24:56')
+        ng : None or int or image
+            Option to explicitly state number of groups. This is specifically
+            used to enable the ability of only calculating pixel noise for
+            unsaturated groups for each pixel. If a numpy array, then it should
+            be the same shape as `fsrc` image. By default will use `self.multiaccum.ngroup`.
+        nf : int
+            Option to explicitly states number of frames in each group.
+            By default will use `self.multiaccum.nf`.
+        verbose : bool
+            Print out results at the end.
 
-        Returns
-        -------
-        int_times_tab : astropy.table.Table
-            Table of starting, mid, and end times for each integration
-        """
+        Keyword Arguments
+        -----------------
+        rn : float
+            Read Noise per pixel (e-).
+        ktc : float
+            kTC noise (in e-). Only valid for single frame (n=1)
+        p_excess : array-like
+            An array or list of two elements that holds the parameters
+            describing the excess variance observed in effective noise plots.
+            By default these are both 0. For NIRCam detectors, recommended
+            values are [1.0,5.0] for SW and [1.5,10.0] for LW.
+        idark : float
+            Dark current in e-/sec/pix.
+        fsrc : float
+            Flux of source in e-/sec/pix.
+        fzodi : float
+            Zodiacal light emission in e-/sec/pix.
+        fbg : float
+            Any additional background (telescope emission or scattered light?)
+        ideal_Poisson : bool
+            If set to True, use total signal for noise estimate,
+            otherwise MULTIACCUM equation is used.
+
+        Notes
+        -----
+        fsrc, fzodi, and fbg are functionally the same as they are immediately summed.
+        They can also be single values or multiple elements (list, array, tuple, etc.).
+        If multiple inputs are arrays, make sure their array sizes match.
         
-        from astropy.table import Table
-        from astropy.time import Time, TimeDelta
-        from astropy import units as u
+        """
 
-        if offset_seconds is None:
-            offset_seconds = 0
+        ma = self.multiaccum
+        if ng is None:
+            ng = ma.ngroup
+        if nf is None:
+            nf = ma.nf
 
-        integration_numbers = np.arange(self.multiaccum.nint)
+        # Pixel noise per ramp (e-/sec/pix)
+        pn = pix_noise(ngroup=ng, nf=nf, nd2=ma.nd2, tf=self.time_frame, **kwargs)
+    
+        # Divide by sqrt(Total Integrations)
+        final = pn / np.sqrt(ma.nint)
+        if verbose:
+            print('Noise (e-/sec/pix): {}'.format(final))
+            print('Total Noise (e-/pix): {}'.format(final*self.time_exp))
 
-        start_time_string = date_start + 'T' + time_start
-        start_time = Time(start_time_string) + offset_seconds * u.second
-
-        integration_time = self.time_total_int2
-        integ_time_delta = TimeDelta(integration_time * u.second)
-        start_times = start_time + (integ_time_delta * integration_numbers)
-
-        reset_time = self.multiaccum.nr2 * self.time_frame
-        integration_time_exclude_reset = TimeDelta((integration_time - reset_time) * u.second)
-        end_times = start_times + integration_time_exclude_reset
-
-        mid_times = start_times + integration_time_exclude_reset / 2.
-
-        # For now, let's keep the BJD (Barycentric?) times identical
-        # to the MJD times.
-        start_times_bjd = start_times
-        mid_times_bjd = mid_times
-        end_times_bjd = end_times
-
-        # Create table
-        nrows = len(integration_numbers)
-        data_list = [(integration_numbers[i] + 1, 
-                      start_times.mjd[i], mid_times.mjd[i], end_times.mjd[i],
-                      start_times_bjd.mjd[i], mid_times_bjd.mjd[i], end_times_bjd.mjd[i]) 
-                     for i in range(nrows)]
-
-        int_times_tab = np.array(data_list,
-                                 dtype=[('integration_number','<i2'),
-                                        ('int_start_MJD_UTC','<f8'),
-                                        ('int_mid_MJD_UTC', '<f8'),
-                                        ('int_end_MJD_UTC','<f8'),
-                                        ('int_start_BJD_TDB','<f8'),
-                                        ('int_mid_BJD_TDB','<f8'),
-                                        ('int_end_BJD_TDB','<f8')])
-
-        return int_times_tab
+        return final
         
     def pix_timing_map(self, same_scan_direction=None, reverse_scan_direction=None,
                        avg_groups=False, reset_zero=False, return_flat=False):
@@ -957,7 +975,38 @@ class det_timing(object):
             return data.ravel()
         else: # Get rid of dimensions of length 1
             return data.squeeze()
-        
+
+    @property
+    def mask_ref(self):
+        """ Mask of reference pixels """
+        lower, upper, left, right = self.ref_info
+
+        mask_ref = np.zeros([self.ypix, self.xpix], dtype='bool')
+        if lower>0: mask_ref[0:lower,:] = True
+        if upper>0: mask_ref[-upper:,:] = True
+        if left>0:  mask_ref[:,0:left]  = True
+        if right>0: mask_ref[:,-right:] = True
+
+        return mask_ref
+
+    @property
+    def mask_act(self):
+        """ Mask of active pixels """
+        return ~self.mask_ref
+
+    @property 
+    def mask_channels(self):
+        """ Amplifier channel indices """
+
+        mask_chans = np.zeros([self.ypix, self.xpix], dtype='int')
+        nchans = self.nout
+        chsize = self.chsize
+        for ch in range(nchans):
+            x1 = ch*chsize
+            x2 = x1 + chsize
+            mask_chans[:,x1:x2] = ch
+
+        return mask_chans
 
 
 class DetectorOps(det_timing):
@@ -1228,6 +1277,69 @@ class DetectorOps(det_timing):
         # Others have slowaxis equal -2
         slowaxis = +2 if np.mod(self.scaid,2)==1 else -2
         return slowaxis
+
+    def int_times_table(self, date_start, time_start, offset_seconds=None):
+        """Create and populate the INT_TIMES table, which is saved as a
+        separate extension in the output data file.
+
+        Parameters
+        ----------
+        date_start : str
+            Date string of observation ('2020-02-28')
+        time_start : str
+            Time string of observation ('12:24:56')
+
+        Returns
+        -------
+        int_times_tab : astropy.table.Table
+            Table of starting, mid, and end times for each integration
+        """
+        
+        from astropy.table import Table
+        from astropy.time import Time, TimeDelta
+        from astropy import units as u
+
+        if offset_seconds is None:
+            offset_seconds = 0
+
+        integration_numbers = np.arange(self.multiaccum.nint)
+
+        start_time_string = date_start + 'T' + time_start
+        start_time = Time(start_time_string) + offset_seconds * u.second
+
+        integration_time = self.time_total_int2
+        integ_time_delta = TimeDelta(integration_time * u.second)
+        start_times = start_time + (integ_time_delta * integration_numbers)
+
+        reset_time = self.multiaccum.nr2 * self.time_frame
+        integration_time_exclude_reset = TimeDelta((integration_time - reset_time) * u.second)
+        end_times = start_times + integration_time_exclude_reset
+
+        mid_times = start_times + integration_time_exclude_reset / 2.
+
+        # For now, let's keep the BJD (Barycentric?) times identical
+        # to the MJD times.
+        start_times_bjd = start_times
+        mid_times_bjd = mid_times
+        end_times_bjd = end_times
+
+        # Create table
+        nrows = len(integration_numbers)
+        data_list = [(integration_numbers[i] + 1, 
+                      start_times.mjd[i], mid_times.mjd[i], end_times.mjd[i],
+                      start_times_bjd.mjd[i], mid_times_bjd.mjd[i], end_times_bjd.mjd[i]) 
+                     for i in range(nrows)]
+
+        int_times_tab = np.array(data_list,
+                                 dtype=[('integration_number','<i2'),
+                                        ('int_start_MJD_UTC','<f8'),
+                                        ('int_mid_MJD_UTC', '<f8'),
+                                        ('int_end_MJD_UTC','<f8'),
+                                        ('int_start_BJD_TDB','<f8'),
+                                        ('int_mid_BJD_TDB','<f8'),
+                                        ('int_end_BJD_TDB','<f8')])
+
+        return int_times_tab
 
     def make_header(self, filter=None, pupil=None, obs_time=None, **kwargs):
         """
