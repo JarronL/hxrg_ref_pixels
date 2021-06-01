@@ -221,8 +221,8 @@ class multiaccum(object):
             self._nd1 = 0
             self._nd2 = nd2
             self._nd3 = 0
-            _log.info('Setting nf={}, nd1={}, nd2={}, nd3={}.'\
-                     .format(self.nf, self.nd1, self.nd2, self.nd3))
+            _log.info('Setting ngroup={}, nf={}, nd1={}, nd2={}, nd3={}.'\
+                     .format(self.ngroup, self.nf, self.nd1, self.nd2, self.nd3))
 
 
     def _check_custom(self, val_new, val_orig):
@@ -1155,9 +1155,11 @@ class DetectorOps(det_timing):
     @detid.setter
     def detid(self, value):
         """Set detector ID (A1, A2, ..., B4, B5). Automatically updates other relevant attributes."""
+        if 'NRC' in value:
+            value = value[3:]
         _check_list(value, self.detid_list, var_name='detid')
 
-        # Switch dictioary keys and values, grab the corresponding SCA ID,
+        # Switch dictionary keys and values, grab the corresponding SCA ID,
         # and then call scaid.setter
         newdict = {y:x for x,y in self._scaids.items()}
         self.scaid = newdict.get(value)
