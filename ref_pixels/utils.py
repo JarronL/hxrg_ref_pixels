@@ -242,7 +242,7 @@ def cube_fit(tarr, data, bias=None, sat_vals=None, sat_frac=0.95,
         lx_min = np.zeros([nx*ny])
         lx_max = np.zeros([nx*ny])
 
-    # For each 
+    # For each ramp size
     npix_sum = 0
     i0 = 0 if fit_zero else 1
     for i in np.arange(i0,nz)[::-1]:
@@ -370,9 +370,11 @@ def _check_list(value, temp_list, var_name=None):
         # Replace None value with string for printing
         if None in temp_list: 
             temp_list[temp_list.index(None)] = 'None'
+        # Make sure all elements are strings
+        temp_list2 = [str(val) for val in temp_list]
         var_name = '' if var_name is None else var_name + ' '
         err_str = "Invalid {}setting: {} \n\tValid values are: {}" \
-                         .format(var_name, value, ', '.join(temp_list))
+                         .format(var_name, value, ', '.join(temp_list2))
         raise ValueError(err_str)
 
 def tuples_to_dict(pairs, verbose=False):
