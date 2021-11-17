@@ -37,6 +37,8 @@ class multiaccum(object):
         Number of reset frames within first ramp. Default=0.
     nr2 : int
         Number of reset frames for subsequent ramps. Default=1.
+    wind_mode : str
+        Set to determine maximum number of allowed groups.
 
     Notes
     -----
@@ -59,16 +61,7 @@ class multiaccum(object):
     """
 
     def __init__(self, read_mode='RAPID', nint=1, ngroup=1, nf=1, nd1=0, nd2=0, nd3=0, 
-                 nr1=1, nr2=1, **kwargs):
-
-
-        # Pre-defined patterns
-        patterns = ['RAPID', 'BRIGHT1', 'BRIGHT2', 'SHALLOW2', 'SHALLOW4', 'MEDIUM2', 'MEDIUM8', 'DEEP2', 'DEEP8']
-        nf_arr   = [1,1,2,2,4,2,8, 2, 8]
-        nd2_arr  = [0,1,0,3,1,8,2,18,12]
-        # TODO: ng_max currently ignored, because not valid for TSO
-        ng_max   = [10,10,10,10,10,10,10,20,20]
-        self._pattern_settings = dict(zip(patterns, zip(nf_arr, nd2_arr, ng_max)))
+                 nr1=1, nr2=1, wind_mode='FULL', **kwargs):
 
         self.nint = nint
         self._ngroup_max = 10000
@@ -190,6 +183,14 @@ class multiaccum(object):
         plist = sorted(list(self._pattern_settings.keys()))
         return ['CUSTOM'] + plist
 
+    @property
+    def _pattern_settings(self):
+        patterns = ['RAPID', 'BRIGHT1', 'BRIGHT2', 'SHALLOW2', 'SHALLOW4', 'MEDIUM2', 'MEDIUM8', 'DEEP2', 'DEEP8']
+        nf_arr   = [1,1,2,2,4,2,8, 2, 8]
+        nd2_arr  = [0,1,0,3,1,8,2,18,12]
+        ng_max   = [10,10,10,10,10,10,10,20,20]
+
+        return dict(zip(patterns, zip(nf_arr, nd2_arr, ng_max)))
 
     def to_dict(self, verbose=False):
         """Export ramp settings to a dictionary."""
@@ -336,6 +337,7 @@ class det_timing(object):
         self._nchans = nchans
         self._nff = nff
 
+        self.multiaccum = multiaccum(wind_mode=wind_mode, **kwargs)
         self.wind_mode = wind_mode.upper()
         self._xpix = xpix; self._x0 = x0
         self._ypix = ypix; self._y0 = y0
@@ -354,8 +356,15 @@ class det_timing(object):
         self._line_overhead = loh
         # Pixel or line resets
         self._reset_type = reset_type
-        
-        self.multiaccum = multiaccum(**kwargs)
+
+    @property
+    def wind_mode(self):
+        """Window mode attribute"""
+        return self._wind_mode
+    @wind_mode.setter
+    def wind_mode(self, value):
+        """Set Window mode attribute"""
+        self._wind_mode = value
 
     @property
     def y0(self):
@@ -410,8 +419,33 @@ class det_timing(object):
             right = int(w-(det_size-x2))
             ref_all = np.array([lower,upper,left,right], dtype='int')
             ref_all[ref_all<0] = 0
-
         return ref_all
+
+    @property
+    def mask_act(self):
+        """Active pixel mask for det coordinates"""
+        # mask_act = np.zeros([self.ypix,self.xpix]).astype('bool')
+        # rb, rt, rl, rr = self.ref_info
+        # mask_act[rb:-rt,rl:-rr] = True  # This doesn't work if rr or rt are 0!!
+        return ~self.mask_ref
+    @property
+    def mask_ref(self):
+        """Reference pixel mask for det coordinates"""
+        # [bottom, upper, left, right]
+        rb, rt, rl, rr = self.ref_info
+        ref_mask = np.zeros([self.ypix,self.xpix], dtype=bool)
+        if rb>0: ref_mask[0:rb,:] = True
+        if rt>0: ref_mask[-rt:,:] = True
+        if rl>0: ref_mask[:,0:rl] = True
+        if rr>0: ref_mask[:,-rr:] = True
+        return ref_mask
+    @property
+    def mask_channels(self):
+        """Channel masks for det coordinates"""
+        ch_mask = np.zeros([self.ypix,self.xpix])
+        for ch in np.arange(self.nout):
+            ch_mask[:,ch*self.chsize:(ch+1)*self.chsize] = ch
+        return ch_mask
 
     @property
     def nff(self):
@@ -717,6 +751,71 @@ class det_timing(object):
         return tuples_to_dict(times, verbose)
 
 
+    def int_times_table(self, date_start, time_start, offset_seconds=None):
+        """Create and populate the INT_TIMES table, which is saved as a
+        separate extension in a DMS output data file.
+
+        Parameters
+        ----------
+        date_start : str
+            Date string of observation ('2020-02-28')
+        time_start : str
+            Time string of observation ('12:24:56')
+        offset_seconds : None or float
+            Time from beginning of observation until start of integration.
+
+        Returns
+        -------
+        int_times_tab : astropy.table.Table
+            Table of starting, mid, and end times for each integration
+        """
+        
+        from astropy.table import Table
+        from astropy.time import Time, TimeDelta
+        from astropy import units as u
+
+        if offset_seconds is None:
+            offset_seconds = 0
+
+        integration_numbers = np.arange(self.multiaccum.nint)
+
+        start_time_string = date_start + 'T' + time_start
+        start_time = Time(start_time_string) + offset_seconds * u.second
+
+        integration_time = self.time_total_int2
+        integ_time_delta = TimeDelta(integration_time * u.second)
+        start_times = start_time + (integ_time_delta * integration_numbers)
+
+        reset_time = self.multiaccum.nr2 * self.time_frame
+        integration_time_exclude_reset = TimeDelta((integration_time - reset_time) * u.second)
+        end_times = start_times + integration_time_exclude_reset
+
+        mid_times = start_times + integration_time_exclude_reset / 2.
+
+        # For now, let's keep the BJD (Barycentric?) times identical
+        # to the MJD times.
+        start_times_bjd = start_times
+        mid_times_bjd = mid_times
+        end_times_bjd = end_times
+
+        # Create table
+        nrows = len(integration_numbers)
+        data_list = [(integration_numbers[i] + 1, 
+                      start_times.mjd[i], mid_times.mjd[i], end_times.mjd[i],
+                      start_times_bjd.mjd[i], mid_times_bjd.mjd[i], end_times_bjd.mjd[i]) 
+                     for i in range(nrows)]
+
+        int_times_tab = np.array(data_list,
+                                 dtype=[('integration_number','<i2'),
+                                        ('int_start_MJD_UTC','<f8'),
+                                        ('int_mid_MJD_UTC', '<f8'),
+                                        ('int_end_MJD_UTC','<f8'),
+                                        ('int_start_BJD_TDB','<f8'),
+                                        ('int_mid_BJD_TDB','<f8'),
+                                        ('int_end_BJD_TDB','<f8')])
+
+        return int_times_tab
+
     def pixel_noise(self, ng=None, nf=None, verbose=False, **kwargs):
         """Noise values per pixel.
         
@@ -976,38 +1075,6 @@ class det_timing(object):
         else: # Get rid of dimensions of length 1
             return data.squeeze()
 
-    @property
-    def mask_ref(self):
-        """ Mask of reference pixels """
-        lower, upper, left, right = self.ref_info
-
-        mask_ref = np.zeros([self.ypix, self.xpix], dtype='bool')
-        if lower>0: mask_ref[0:lower,:] = True
-        if upper>0: mask_ref[-upper:,:] = True
-        if left>0:  mask_ref[:,0:left]  = True
-        if right>0: mask_ref[:,-right:] = True
-
-        return mask_ref
-
-    @property
-    def mask_act(self):
-        """ Mask of active pixels """
-        return ~self.mask_ref
-
-    @property 
-    def mask_channels(self):
-        """ Amplifier channel indices """
-
-        mask_chans = np.zeros([self.ypix, self.xpix], dtype='int')
-        nchans = self.nout
-        chsize = self.chsize
-        for ch in range(nchans):
-            x1 = ch*chsize
-            x2 = x1 + chsize
-            mask_chans[:,x1:x2] = ch
-
-        return mask_chans
-
 
 class DetectorOps(det_timing):
     """ 
@@ -1101,7 +1168,7 @@ class DetectorOps(det_timing):
             self.scaid = detector 
         except ValueError: 
             try: # If that doesn't work, then try to set Detector ID
-                self.detid = detector
+                self.detid = get_detname(detector)[3:]
             except ValueError: # If neither work, raise ValueError exception
                 raise ValueError("Invalid detector: {0} \n\tValid names are: {1},\n\t{2}" \
                       .format(detector, ', '.join(self.detid_list), \
@@ -1770,7 +1837,10 @@ def create_detops(header, DMS=False, read_mode=None, nint=None, ngroup=None,
     # from pynrc.pynrc_core import DetectorOps
 
     # Detector ID
-    detector = header['SCA_ID'] if detector is None else detector
+    if detector is None:
+        detector = header.get('SCA_ID')
+        if detector is None:
+            detector = header.get('DETECTOR')         
 
     # Detector size
     xpix = header['SUBSIZE1'] if DMS else header['NAXIS1'] if xpix is None else xpix
@@ -1785,28 +1855,9 @@ def create_detops(header, DMS=False, read_mode=None, nint=None, ngroup=None,
         y1 = header['SUBSTRT2'] if DMS else header['ROWCORNR']
         y0 = y1 - 1
 
-    # Subarray setting, Full, Stripe, or Window
-    # if wind_mode is None:
-    #     if DMS:
-    #         if 'FULL' in header['SUBARRAY']:
-    #             wind_mode = 'FULL'
-    #         elif 'GRISM' in header['SUBARRAY']:
-    #             wind_mode = 'STRIPE'
-    #         else:
-    #             wind_mode = 'WINDOW'
-    #     else:
-    #         if not header['SUBARRAY']:
-    #             wind_mode = 'FULL'
-    #         elif 'DISABLE' in header['HWINMODE']:
-    #             wind_mode = 'STRIPE'
-    #         else:
-    #             wind_mode = 'WINDOW'
-
     # Subarray setting: Full, Stripe, or Window
     if wind_mode is None:
-        if DMS and ('FULL' in header['SUBARRAY']):
-            wind_mode = 'FULL'
-        elif (not DMS) and (not header['SUBARRAY']):
+        if xpix==ypix==2048:
             wind_mode = 'FULL'
         else:
             # Test if STRIPE or WINDOW
@@ -1827,4 +1878,33 @@ def create_detops(header, DMS=False, read_mode=None, nint=None, ngroup=None,
 
     return DetectorOps(detector, wind_mode, xpix, ypix, x0, y0, nff, **ma_args)
 
+
+def get_detname(det_id):
+    """Return NRC[A-B][1-5] for valid detector/SCA IDs"""
+
+    det_dict = {481:'A1', 482:'A2', 483:'A3', 484:'A4', 485:'A5',
+                486:'B1', 487:'B2', 488:'B3', 489:'B4', 490:'B5'}
+    scaids = det_dict.keys()
+    detids = det_dict.values()
+    detnames = ['NRC' + idval for idval in detids]
+
+    # If already valid, then return
+    if det_id in detnames:
+        return det_id
+    elif det_id in scaids:
+        detname = 'NRC' + det_dict[det_id]
+    elif det_id in detids:
+        detname = 'NRC' + det_id
+    else:
+        detname = det_id
+
+    # If NRCALONG or or NRCBLONG, change 'LONG' to '5' 
+    if 'LONG' in detname:
+        detname = detname[0:4] + '5'
+
+    if detname not in detnames:
+        raise ValueError("Invalid detector: {} \n\tValid names are: {}" \
+                  .format(detname, ', '.join(detnames)))
+        
+    return detname
 
