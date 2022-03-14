@@ -252,7 +252,7 @@ class det_timing(object):
     Parameters
     ----------------
     wind_mode : str
-        Window mode type 'FULL', 'STRIPE', 'WINDOW'.
+        Window mode type 'FULL', 'STRIPE', 'BURST_STRIPE', 'WINDOW'.
     xpix : int
         Size of window in x-pixels for frame time calculation.
     ypix : int
@@ -321,7 +321,7 @@ class det_timing(object):
             reset_type = 'line'
             if nff is None: nff = 0
         elif self._opmode == 'SHARK_100':
-            pixrate = 2.5e5
+            pixrate = 1e5
             loh = 10
             nchans = 4
             reset_type = 'pixel'
@@ -451,7 +451,9 @@ class det_timing(object):
     def nff(self):
         """Number of fast row resets that occur before Reset Frame"""
         if self._nff is None:
-            if self.wind_mode=='WINDOW': 
+            if 'SHARK' in self._opmode:
+                nff = 0
+            elif self.wind_mode=='WINDOW': 
                 if   self.ypix>256: nff = 2048
                 elif self.ypix>64:  nff = 512
                 elif self.ypix>16:  nff = 256
